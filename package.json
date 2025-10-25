@@ -1,1 +1,11 @@
-r
+{
+  "name": "disparador",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.20",
+    "csv-parse": "^5.5.0",
+    "node-fetch": "^3.3.2",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
