@@ -5,13 +5,13 @@ import fs from 'fs';
 import path from 'path';
 
 // 🔧 CONFIGURAÇÕES
-const PASTA_ARQUIVOS = `${process.env.HOME}/storage/shared/Disparos`; // Pasta com os arquivos
-const INTERVALO_ENTRE_NUMEROS = 25000; // 25 segundos entre números (ajustável)
+const PASTA_ARQUIVOS = `${process.env.HOME}/storage/shared/Disparos`; 
+const INTERVALO_ENTRE_NUMEROS = 30000; // 30 segundos entre números
 const NUMEROS_FILE = 'numeros.txt';
 const LEGENDA_FILE = 'legenda.txt';
-const PRODUTOS_FILE = 'produtos.txt'; // Lista de arquivos que serão enviados
-const ERROS_FILE = 'erros.txt'; // Arquivo para registrar erros
-const PAIS_FILE = 'pais.txt'; // Arquivo opcional com código do país (ex: 1, 55) ou ISO (ex: US, BR)
+const PRODUTOS_FILE = 'produtos.txt';
+const ERROS_FILE = 'erros.txt';
+const PAIS_FILE = 'pais.txt';
 
 // Mapa ISO -> DDI
 const ISO_TO_CODE = {
@@ -19,7 +19,7 @@ const ISO_TO_CODE = {
   RU: '7', ZA: '27'
 };
 
-// 🔹 Lê pais.txt e retorna DDI (string de dígitos) ou null
+// 🔹 Lê pais.txt e retorna DDI
 function readDefaultCountryCode() {
   try {
     if (!fs.existsSync(PAIS_FILE)) return null;
@@ -42,34 +42,30 @@ function readDefaultCountryCode() {
 
 const DEFAULT_COUNTRY_CODE = readDefaultCountryCode();
 
-// 🔹 Função para normalizar números para WhatsApp (adaptação para outros países)
+// 🔹 Normaliza números para WhatsApp
 function normalizarNumero(numero) {
   if (!numero) return '';
   let n = String(numero).replace(/\D/g, '');
-  
-  // Se começou com +, remove o +
   if (numero.startsWith('+')) {
     n = n;
   } else if (DEFAULT_COUNTRY_CODE) {
     n = DEFAULT_COUNTRY_CODE + n;
   }
-
-  // Ajuste do quinto dígito se for BR e tiver 13 dígitos
   if (n.startsWith('55') && n.length === 13 && n[4] === '9') {
     n = n.slice(0,4) + n.slice(5);
   }
-
   return n;
 }
 
-// 🚀 Iniciar WhatsApp
+// 🚀 Iniciar WhatsApp com reconexão
 async function startWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
   const { version } = await fetchLatestBaileysVersion();
   const sock = makeWASocket({ version, auth: state });
 
-  sock.ev.on('connection.update', (update) => {
+  sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
+
     if (qr) {
       qrcode.generate(qr, { small: true });
       console.log('📱 Escaneie o QR code com o WhatsApp!');
@@ -79,8 +75,9 @@ async function startWhatsApp() {
       console.log('❌ Conexão fechada');
       const reason = lastDisconnect?.error?.output?.statusCode;
       if (reason !== DisconnectReason.loggedOut) {
-        console.log('🔄 Tentando reconectar...');
-        startWhatsApp();
+        console.log('🔄 Tentando reconectar em 5 segundos...');
+        await delay(5000);
+        await startWhatsApp(); // Reconnect
       }
     } else if (connection === 'open') {
       console.log('✅ Conectado ao WhatsApp!');
@@ -93,7 +90,7 @@ async function startWhatsApp() {
 
 // 🧠 Função principal
 async function startBot() {
-  const sock = await startWhatsApp();
+  let sock = await startWhatsApp();
 
   console.log('⏳ Aguardando conexão...');
   await new Promise((resolve) => {
@@ -107,12 +104,10 @@ async function startBot() {
   });
 
   console.log('🚀 Conexão estabelecida!');
-
   if (DEFAULT_COUNTRY_CODE) {
     console.log(`🔎 pais.txt detectado -> aplicando DDI padrão: ${DEFAULT_COUNTRY_CODE} para números sem código.`);
   }
 
-  // 📄 Ler números e legenda
   const numeros = fs.readFileSync(NUMEROS_FILE, 'utf-8')
                      .split('\n')
                      .map(n => normalizarNumero(n))
@@ -120,7 +115,6 @@ async function startBot() {
 
   const legenda = fs.readFileSync(LEGENDA_FILE, 'utf-8').trim();
 
-  // 📄 Ler produtos a enviar
   const produtos = fs.readFileSync(PRODUTOS_FILE, 'utf-8')
                       .split('\n')
                       .map(p => p.trim())
@@ -138,26 +132,40 @@ async function startBot() {
       }
 
       const ext = path.extname(arquivo).toLowerCase();
-      try {
-        if (['.mp3', '.wav', '.ogg'].includes(ext)) {
-          await sock.sendMessage(jid, { audio: { url: caminho }, mimetype: 'audio/mpeg' });
-          await sock.sendMessage(jid, { text: legenda });
-        } else if (['.jpg', '.jpeg', '.png', '.gif'].includes(ext)) {
-          await sock.sendMessage(jid, { image: { url: caminho }, caption: legenda });
-        } else if (['.mp4', '.mov', '.avi'].includes(ext)) {
-          await sock.sendMessage(jid, { video: { url: caminho }, caption: legenda });
-        } else {
-          await sock.sendMessage(jid, { document: { url: caminho }, mimetype: 'application/octet-stream', fileName: arquivo });
-          await sock.sendMessage(jid, { text: legenda });
-        }
+      let enviado = false;
 
-        console.log(`📎 Arquivo enviado: ${arquivo}`);
-        await delay(2000);
-      } catch (err) {
-        console.error(`⚠️ Erro ao enviar ${arquivo} para ${numero}:`, err);
-        const erroMsg = `${numero} | ${arquivo} | ${err.message}\n`;
-        fs.appendFileSync(ERROS_FILE, erroMsg);
-        console.log(`📝 Registrado no ${ERROS_FILE}`);
+      // Tentativa com reconexão automática
+      for (let tent = 0; tent < 3 && !enviado; tent++) {
+        try {
+          if (['.mp3', '.wav', '.ogg'].includes(ext)) {
+            await sock.sendMessage(jid, { audio: { url: caminho }, mimetype: 'audio/mpeg' });
+            await sock.sendMessage(jid, { text: legenda });
+          } else if (['.jpg', '.jpeg', '.png', '.gif'].includes(ext)) {
+            await sock.sendMessage(jid, { image: { url: caminho }, caption: legenda });
+          } else if (['.mp4', '.mov', '.avi'].includes(ext)) {
+            await sock.sendMessage(jid, { video: { url: caminho }, caption: legenda });
+          } else {
+            await sock.sendMessage(jid, { document: { url: caminho }, mimetype: 'application/octet-stream', fileName: arquivo });
+            await sock.sendMessage(jid, { text: legenda });
+          }
+
+          console.log(`📎 Arquivo enviado: ${arquivo}`);
+          enviado = true;
+          await delay(2000);
+        } catch (err) {
+          console.error(`⚠️ Erro ao enviar ${arquivo} para ${numero}:`, err);
+          const erroMsg = `${numero} | ${arquivo} | ${err.message}\n`;
+          fs.appendFileSync(ERROS_FILE, erroMsg);
+          console.log(`📝 Registrado no ${ERROS_FILE}`);
+
+          console.log('⏳ Tentando reconectar e reenviar em 5 segundos...');
+          await delay(5000);
+          sock = await startWhatsApp();
+        }
+      }
+
+      if (!enviado) {
+        console.log(`❌ Falha ao enviar ${arquivo} para ${numero} após 3 tentativas.`);
       }
     }
 
