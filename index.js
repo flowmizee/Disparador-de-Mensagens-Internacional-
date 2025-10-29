@@ -1,14 +1,19 @@
 // index.js
-import makeWASocket, { fetchLatestBaileysVersion, useMultiFileAuthState, delay, DisconnectReason } from '@whiskeysockets/baileys';
+import makeWASocket, {
+  fetchLatestBaileysVersion,
+  useMultiFileAuthState,
+  delay,
+  DisconnectReason
+} from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import fs from 'fs';
 import path from 'path';
 
 // 🔧 CONFIGURAÇÕES
-const PASTA_ARQUIVOS = `${process.env.HOME}/storage/shared/Disparos`; 
-const INTERVALO_ENTRE_NUMEROS = 30000; // 30 segundos entre números
+const PASTA_ARQUIVOS = `${process.env.HOME}/storage/shared/Disparos`;
+const INTERVALO_ENTRE_NUMEROS = 45000; // 45 segundos
 const NUMEROS_FILE = 'numeros.txt';
-const LEGENDA_FILE = 'legenda.txt';
+const MENSAGENS_FILE = 'mensagens.txt';
 const PRODUTOS_FILE = 'produtos.txt';
 const ERROS_FILE = 'erros.txt';
 const PAIS_FILE = 'pais.txt';
@@ -52,32 +57,51 @@ function normalizarNumero(numero) {
     n = DEFAULT_COUNTRY_CODE + n;
   }
   if (n.startsWith('55') && n.length === 13 && n[4] === '9') {
-    n = n.slice(0,4) + n.slice(5);
+    n = n.slice(0, 4) + n.slice(5);
   }
   return n;
 }
 
-// 🚀 Iniciar WhatsApp com reconexão
-async function startWhatsApp() {
+// 🚀 Iniciar WhatsApp com QR garantido
+async function startWhatsApp(isReconnect = false) {
+  if (!fs.existsSync('./auth_info')) {
+    fs.mkdirSync('./auth_info', { recursive: true });
+  }
+
   const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
   const { version } = await fetchLatestBaileysVersion();
-  const sock = makeWASocket({ version, auth: state });
+
+  const sock = makeWASocket({
+    version,
+    auth: state,
+    printQRInTerminal: false, // QR gerado manualmente
+    browser: ['Flowmize', 'Chrome', '10.0'],
+    markOnlineOnConnect: false,
+    syncFullHistory: false
+  });
 
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    if (qr) {
+    if (qr && !isReconnect) {
+      console.clear();
+      console.log('📱 Escaneie o QR code com o WhatsApp! (2 minutos de validade)');
       qrcode.generate(qr, { small: true });
-      console.log('📱 Escaneie o QR code com o WhatsApp!');
     }
 
     if (connection === 'close') {
-      console.log('❌ Conexão fechada');
       const reason = lastDisconnect?.error?.output?.statusCode;
-      if (reason !== DisconnectReason.loggedOut) {
+      console.log('❌ Conexão fechada');
+
+      if (reason === DisconnectReason.loggedOut) {
+        console.log('⚠️ Sessão expirada. Limpando auth_info...');
+        fs.rmSync('./auth_info', { recursive: true, force: true });
+        await delay(3000);
+        await startWhatsApp(false);
+      } else {
         console.log('🔄 Tentando reconectar em 5 segundos...');
         await delay(5000);
-        await startWhatsApp(); // Reconnect
+        await startWhatsApp(true);
       }
     } else if (connection === 'open') {
       console.log('✅ Conectado ao WhatsApp!');
@@ -90,7 +114,8 @@ async function startWhatsApp() {
 
 // 🧠 Função principal
 async function startBot() {
-  let sock = await startWhatsApp();
+  const primeiraExecucao = !fs.existsSync('./auth_info/creds.json');
+  let sock = await startWhatsApp(!primeiraExecucao);
 
   console.log('⏳ Aguardando conexão...');
   await new Promise((resolve) => {
@@ -105,67 +130,74 @@ async function startBot() {
 
   console.log('🚀 Conexão estabelecida!');
   if (DEFAULT_COUNTRY_CODE) {
-    console.log(`🔎 pais.txt detectado -> aplicando DDI padrão: ${DEFAULT_COUNTRY_CODE} para números sem código.`);
+    console.log(`🔎 pais.txt detectado -> aplicando DDI padrão: ${DEFAULT_COUNTRY_CODE}`);
   }
 
   const numeros = fs.readFileSync(NUMEROS_FILE, 'utf-8')
-                     .split('\n')
-                     .map(n => normalizarNumero(n))
-                     .filter(n => n);
+    .split('\n')
+    .map(n => normalizarNumero(n))
+    .filter(n => n);
 
-  const legenda = fs.readFileSync(LEGENDA_FILE, 'utf-8').trim();
+  const mensagens = fs.readFileSync(MENSAGENS_FILE, 'utf-8')
+    .split(/\n(?=\d+\.)/) // separa por número no início da linha (1. 2. 3.)
+    .map(m => m.replace(/^\d+\.\s*/, '').trim())
+    .filter(m => m);
 
   const produtos = fs.readFileSync(PRODUTOS_FILE, 'utf-8')
-                      .split('\n')
-                      .map(p => p.trim())
-                      .filter(p => p);
+    .split('\n')
+    .map(p => p.trim())
+    .filter(p => p);
+
+  let msgIndex = 0;
+  let produtoIndex = 0;
 
   for (const numero of numeros) {
     const jid = `${numero}@s.whatsapp.net`;
+    const mensagem = mensagens[msgIndex % mensagens.length]; // alterna mensagem
+    const arquivo = produtos[produtoIndex % produtos.length]; // alterna mídia
+    msgIndex++;
+    produtoIndex++;
+
     console.log(`📤 Enviando para ${numero}...`);
 
-    for (const arquivo of produtos) {
-      const caminho = path.join(PASTA_ARQUIVOS, arquivo);
-      if (!fs.existsSync(caminho)) {
-        console.log(`⚠️ Arquivo não encontrado: ${arquivo}`);
-        continue;
-      }
+    const caminho = path.join(PASTA_ARQUIVOS, arquivo);
+    if (!fs.existsSync(caminho)) {
+      console.log(`⚠️ Arquivo não encontrado: ${arquivo}`);
+      continue;
+    }
 
-      const ext = path.extname(arquivo).toLowerCase();
-      let enviado = false;
+    const ext = path.extname(arquivo).toLowerCase();
+    let enviado = false;
 
-      // Tentativa com reconexão automática
-      for (let tent = 0; tent < 3 && !enviado; tent++) {
-        try {
-          if (['.mp3', '.wav', '.ogg'].includes(ext)) {
-            await sock.sendMessage(jid, { audio: { url: caminho }, mimetype: 'audio/mpeg' });
-            await sock.sendMessage(jid, { text: legenda });
-          } else if (['.jpg', '.jpeg', '.png', '.gif'].includes(ext)) {
-            await sock.sendMessage(jid, { image: { url: caminho }, caption: legenda });
-          } else if (['.mp4', '.mov', '.avi'].includes(ext)) {
-            await sock.sendMessage(jid, { video: { url: caminho }, caption: legenda });
-          } else {
-            await sock.sendMessage(jid, { document: { url: caminho }, mimetype: 'application/octet-stream', fileName: arquivo });
-            await sock.sendMessage(jid, { text: legenda });
-          }
-
-          console.log(`📎 Arquivo enviado: ${arquivo}`);
-          enviado = true;
-          await delay(2000);
-        } catch (err) {
-          console.error(`⚠️ Erro ao enviar ${arquivo} para ${numero}:`, err);
-          const erroMsg = `${numero} | ${arquivo} | ${err.message}\n`;
-          fs.appendFileSync(ERROS_FILE, erroMsg);
-          console.log(`📝 Registrado no ${ERROS_FILE}`);
-
-          console.log('⏳ Tentando reconectar e reenviar em 5 segundos...');
-          await delay(5000);
-          sock = await startWhatsApp();
+    for (let tent = 0; tent < 3 && !enviado; tent++) {
+      try {
+        if (['.mp3', '.wav', '.ogg'].includes(ext)) {
+          await sock.sendMessage(jid, { audio: { url: caminho }, mimetype: 'audio/mpeg' });
+          await sock.sendMessage(jid, { text: mensagem });
+        } else if (['.jpg', '.jpeg', '.png', '.gif'].includes(ext)) {
+          await sock.sendMessage(jid, { image: { url: caminho }, caption: mensagem });
+        } else if (['.mp4', '.mov', '.avi'].includes(ext)) {
+          await sock.sendMessage(jid, { video: { url: caminho }, caption: mensagem });
+        } else {
+          await sock.sendMessage(jid, {
+            document: { url: caminho },
+            mimetype: 'application/octet-stream',
+            fileName: arquivo
+          });
+          await sock.sendMessage(jid, { text: mensagem });
         }
-      }
 
-      if (!enviado) {
-        console.log(`❌ Falha ao enviar ${arquivo} para ${numero} após 3 tentativas.`);
+        console.log(`📎 Enviado: ${arquivo}`);
+        enviado = true;
+        await delay(2000);
+      } catch (err) {
+        console.error(`⚠️ Erro ao enviar ${arquivo} para ${numero}:`, err.message);
+        fs.appendFileSync(ERROS_FILE, `${numero} | ${arquivo} | ${err.message}\n`);
+        console.log(`📝 Registrado no ${ERROS_FILE}`);
+
+        console.log('⏳ Tentando reconectar e reenviar em 5 segundos...');
+        await delay(5000);
+        sock = await startWhatsApp(true);
       }
     }
 
