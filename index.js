@@ -11,11 +11,12 @@ import path from 'path';
 
 // 🔧 CONFIGURAÇÕES
 const PASTA_ARQUIVOS = `${process.env.HOME}/storage/shared/Disparos`;
-const INTERVALO_ENTRE_NUMEROS = 45000; // 45 segundos
+const INTERVALO_ENTRE_NUMEROS = 35000; // 35 segundos
 const NUMEROS_FILE = 'numeros.txt';
 const MENSAGENS_FILE = 'mensagens.txt';
 const PRODUTOS_FILE = 'produtos.txt';
 const ERROS_FILE = 'erros.txt';
+const ENVIADOS_FILE = 'enviados.txt';
 const PAIS_FILE = 'pais.txt';
 
 // Mapa ISO -> DDI
@@ -74,7 +75,7 @@ async function startWhatsApp(isReconnect = false) {
   const sock = makeWASocket({
     version,
     auth: state,
-    printQRInTerminal: false, // QR gerado manualmente
+    printQRInTerminal: false,
     browser: ['Flowmize', 'Chrome', '10.0'],
     markOnlineOnConnect: false,
     syncFullHistory: false
@@ -139,7 +140,7 @@ async function startBot() {
     .filter(n => n);
 
   const mensagens = fs.readFileSync(MENSAGENS_FILE, 'utf-8')
-    .split(/\n(?=\d+\.)/) // separa por número no início da linha (1. 2. 3.)
+    .split(/\n(?=\d+\.)/)
     .map(m => m.replace(/^\d+\.\s*/, '').trim())
     .filter(m => m);
 
@@ -148,13 +149,22 @@ async function startBot() {
     .map(p => p.trim())
     .filter(p => p);
 
+  const enviados = fs.existsSync(ENVIADOS_FILE)
+    ? fs.readFileSync(ENVIADOS_FILE, 'utf-8').split('\n').map(l => l.trim())
+    : [];
+
   let msgIndex = 0;
   let produtoIndex = 0;
 
   for (const numero of numeros) {
+    if (enviados.includes(numero)) {
+      console.log(`⚡ Pulando ${numero} (já enviado)`);
+      continue;
+    }
+
     const jid = `${numero}@s.whatsapp.net`;
-    const mensagem = mensagens[msgIndex % mensagens.length]; // alterna mensagem
-    const arquivo = produtos[produtoIndex % produtos.length]; // alterna mídia
+    const mensagem = mensagens[msgIndex % mensagens.length];
+    const arquivo = produtos[produtoIndex % produtos.length];
     msgIndex++;
     produtoIndex++;
 
@@ -188,6 +198,7 @@ async function startBot() {
         }
 
         console.log(`📎 Enviado: ${arquivo}`);
+        fs.appendFileSync(ENVIADOS_FILE, `${numero}\n`); // marca como enviado
         enviado = true;
         await delay(2000);
       } catch (err) {
