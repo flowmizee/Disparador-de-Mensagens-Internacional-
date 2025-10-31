@@ -19,13 +19,13 @@ const ERROS_FILE = 'erros.txt';
 const ENVIADOS_FILE = 'enviados.txt';
 const PAIS_FILE = 'pais.txt';
 
-// Mapa ISO -> DDI
+// 🌎 Mapa ISO → DDI
 const ISO_TO_CODE = {
   BR: '55', US: '1', GB: '44', CA: '1', AU: '61', ES: '34', MX: '52', PT: '351', DE: '49', IT: '39',
   RU: '7', ZA: '27'
 };
 
-// 🔹 Lê pais.txt e retorna DDI
+// 📂 Lê pais.txt e define o código padrão
 function readDefaultCountryCode() {
   try {
     if (!fs.existsSync(PAIS_FILE)) return null;
@@ -45,10 +45,9 @@ function readDefaultCountryCode() {
     return null;
   }
 }
-
 const DEFAULT_COUNTRY_CODE = readDefaultCountryCode();
 
-// 🔹 Normaliza números para WhatsApp
+// ☎️ Normaliza números
 function normalizarNumero(numero) {
   if (!numero) return '';
   let n = String(numero).replace(/\D/g, '');
@@ -63,12 +62,9 @@ function normalizarNumero(numero) {
   return n;
 }
 
-// 🚀 Iniciar WhatsApp com QR garantido
+// 🚀 Inicia o WhatsApp
 async function startWhatsApp(isReconnect = false) {
-  if (!fs.existsSync('./auth_info')) {
-    fs.mkdirSync('./auth_info', { recursive: true });
-  }
-
+  if (!fs.existsSync('./auth_info')) fs.mkdirSync('./auth_info', { recursive: true });
   const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
   const { version } = await fetchLatestBaileysVersion();
 
@@ -86,14 +82,13 @@ async function startWhatsApp(isReconnect = false) {
 
     if (qr && !isReconnect) {
       console.clear();
-      console.log('📱 Escaneie o QR code com o WhatsApp! (2 minutos de validade)');
+      console.log('📱 Escaneie o QR code (válido por 2 minutos)');
       qrcode.generate(qr, { small: true });
     }
 
     if (connection === 'close') {
       const reason = lastDisconnect?.error?.output?.statusCode;
       console.log('❌ Conexão fechada');
-
       if (reason === DisconnectReason.loggedOut) {
         console.log('⚠️ Sessão expirada. Limpando auth_info...');
         fs.rmSync('./auth_info', { recursive: true, force: true });
@@ -130,9 +125,7 @@ async function startBot() {
   });
 
   console.log('🚀 Conexão estabelecida!');
-  if (DEFAULT_COUNTRY_CODE) {
-    console.log(`🔎 pais.txt detectado -> aplicando DDI padrão: ${DEFAULT_COUNTRY_CODE}`);
-  }
+  if (DEFAULT_COUNTRY_CODE) console.log(`🌍 DDI padrão detectado: ${DEFAULT_COUNTRY_CODE}`);
 
   const numeros = fs.readFileSync(NUMEROS_FILE, 'utf-8')
     .split('\n')
@@ -162,6 +155,12 @@ async function startBot() {
       continue;
     }
 
+    // ✅ Espera a sessão realmente estar ativa
+    while (!sock.user) {
+      console.log('⏳ Aguardando sessão do WhatsApp ficar pronta...');
+      await delay(2000);
+    }
+
     const jid = `${numero}@s.whatsapp.net`;
     const mensagem = mensagens[msgIndex % mensagens.length];
     const arquivo = produtos[produtoIndex % produtos.length];
@@ -169,7 +168,6 @@ async function startBot() {
     produtoIndex++;
 
     console.log(`📤 Enviando para ${numero}...`);
-
     const caminho = path.join(PASTA_ARQUIVOS, arquivo);
     if (!fs.existsSync(caminho)) {
       console.log(`⚠️ Arquivo não encontrado: ${arquivo}`);
@@ -198,15 +196,15 @@ async function startBot() {
         }
 
         console.log(`📎 Enviado: ${arquivo}`);
-        fs.appendFileSync(ENVIADOS_FILE, `${numero}\n`); // marca como enviado
+        fs.appendFileSync(ENVIADOS_FILE, `${numero}\n`);
         enviado = true;
         await delay(2000);
       } catch (err) {
         console.error(`⚠️ Erro ao enviar ${arquivo} para ${numero}:`, err.message);
         fs.appendFileSync(ERROS_FILE, `${numero} | ${arquivo} | ${err.message}\n`);
-        console.log(`📝 Registrado no ${ERROS_FILE}`);
+        console.log('📝 Registrado no erros.txt');
 
-        console.log('⏳ Tentando reconectar e reenviar em 5 segundos...');
+        console.log('🔁 Tentando reconectar em 5s...');
         await delay(5000);
         sock = await startWhatsApp(true);
       }
